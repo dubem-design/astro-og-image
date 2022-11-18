@@ -27,6 +27,8 @@ export default function astroOGImage({
         let path = config.path;
         let matches = config.matches;
 
+        console.log("matches", matches);
+
         let filteredRoutes = routes.filter((route: RouteData) =>
           route?.component?.includes(path)
         );
