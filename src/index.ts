@@ -1,21 +1,23 @@
 import * as fs from "fs";
-import path from "path";
 import puppeteer from "puppeteer";
 import { fileURLToPath } from "node:url";
-import type { AstroIntegration, RouteData } from "astro";
 import glob from "glob";
+import type { AstroIntegration, RouteData } from "astro";
 
-type pagePath = {
-  pathName: string;
+type matchedPathType = {
+  pathname: string;
+  regex: RegExp | undefined;
+  namePrefix: string | undefined;
 };
-type patternsType = {
-  pattern: RegExp;
+type matchesConfigType = {
+  regex: RegExp;
+  namePrefix: string;
 };
 
 export default function astroOGImage({
   config,
 }: {
-  config: { path: string; patterns: patternsType[] };
+  config: { path: string; matches: matchesConfigType[] };
 }): AstroIntegration {
   return {
     name: "astro-og-image",
@@ -23,28 +25,32 @@ export default function astroOGImage({
       "astro:build:done": async ({ dir, routes }) => {
         printRoutePatterns(routes);
         let path = config.path;
-        let patterns = config.patterns;
+        let matches = config.matches;
+
         let filteredRoutes = routes.filter((route: RouteData) =>
           route?.component?.includes(path)
         );
 
-        const filteredPatternedRoutes = glob.sync(
-          dir.pathname + "**/*.html",
-          {}
-        );
-        const res = filteredPatternedRoutes
-          .filter((x: string, index: number) => {
-            return patterns.find((y) => {
-              const noSystemDir = x.replace(/.*(?=dist)/i, "");
-              const noDist = noSystemDir.replace(/dist/i, "");
-              const noIndexHtml = noDist.replace(/index.html/i, "");
-              return new RegExp(y.pattern).test(noIndexHtml);
+        const allPageFiles: string[] = glob.sync(dir.pathname + "**/*.html");
+
+        const filteredPatternsRoutes: matchedPathType[] = allPageFiles
+          .map((pathname: string): matchedPathType => {
+            const matchRelPath = pathname.match(/\bdist([^<]+)index.html/);
+            const relativePath: string = matchRelPath ? matchRelPath[1] : "";
+            const aMatch: matchesConfigType | undefined = matches.find((x) => {
+              return new RegExp(x.regex).test(relativePath);
             });
+            // const { regex } = aMatch;
+            return {
+              pathname,
+              regex: aMatch?.regex,
+              namePrefix: aMatch?.namePrefix,
+            };
           })
-          .map((x) => ({ pathname: x }));
+          .filter((x, index: number) => x.regex);
 
         await generateOgImage(
-          patterns ? res : filteredPatternedRoutes,
+          matches ? filteredPatternsRoutes : filteredRoutes,
           path,
           dir
         );
@@ -54,7 +60,7 @@ export default function astroOGImage({
 }
 
 async function generateOgImage(
-  filteredRoutes: RouteData[],
+  filteredRoutes: RouteData[] | matchedPathType[],
   path: string,
   dir: any
 ) {
@@ -68,21 +74,31 @@ async function generateOgImage(
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
   for (const route of filteredRoutes) {
-    // Gets the title
-    const pathname = route?.pathname;
-    // console.log("pathname", pathname);
+    const { pathname, namePrefix }: any = route;
 
     // Skip URLs that have not been built (draft: true, etc.)
     if (!pathname) continue;
 
     const data = fs.readFileSync(pathname as any, "utf-8") as any;
-    let title = await data.match(/<title[^>]*>([^<]+)<\/title>/)[1];
+    let htmlTitle = await data.match(/<title[^>]*>([^<]+)<\/title>/)[1];
+    // let res = await data.match(/\bdata-og="([^<]+)"/)[1];
+    let res = await data.match(/<div id="og-script"[^>]*>([^<]+)<\/div>/)[1];
+    let title, thumbnail;
+    if (res) {
+      const configData = JSON.parse(res);
+      // console.log(res);
+      // console.log(configData);
+      console.log(configData.thumbnail);
+      title = configData.title;
+      thumbnail = configData.thumbnail;
+    }
 
     // Get the html
     const html = fs
       .readFileSync("og-image.html", "utf-8")
       .toString()
-      .replace("@title", title);
+      .replace("@title", title || htmlTitle)
+      .replace("@thumbnail", thumbnail);
 
     const page = await browser.newPage();
     await page.setContent(html);
@@ -94,7 +110,7 @@ async function generateOgImage(
 
     await page.screenshot({
       path: fileURLToPath(
-        new URL(`./assets/${pathname.split("/").at(-2)}.png`, dir)
+        new URL(`./assets/${namePrefix}${pathname.split("/").at(-2)}.png`, dir)
       ),
       encoding: "binary",
     });
@@ -103,11 +119,10 @@ async function generateOgImage(
 }
 
 function printRoutePatterns(routes: RouteData[]) {
-  console.log("From astro-og-image: ======================");
-  console.log("Routes Patterns to copy: ======================");
+  console.log("For astro-og-image, Routes Patterns to copy: ==========");
   routes.forEach((x) => {
     console.log("template/page: ", x.route);
-    console.log("pattern: ", x.pattern);
+    console.log("regex: ", x.pattern);
     console.log(" ");
   });
 }
